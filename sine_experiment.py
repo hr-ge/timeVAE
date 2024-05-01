@@ -1,3 +1,4 @@
+# The sine_experiment.py file is a modification of test_vae.py.
 
 import os, warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # or any {'0', '1', '2'}
@@ -19,67 +20,65 @@ import argparse
 
 
 if __name__ == '__main__':
+    # Hyper-parameters:
+    ls = [50, 100, 200]     # Layer size.
+    ld = 8                  # Number of latent dimensions.
+    tp = 2                  # Number of trend polynomials.
+
     parser = argparse.ArgumentParser(description='manual to this script')
     parser.add_argument('--dataset_name', type=str, default = None)
-    parser.add_argument('--dataset_state', type=str, default = None)
     args = parser.parse_args()
 
     dataset_name = args.dataset_name
-    dataset_state = args.dataset_state
 
     start = time.time()
     
-    data_dir = './datasets/'
+    data_dir = '../datasets/'
     # ----------------------------------------------------------------------------------
     # choose model
     vae_type = 'timeVAE'           # vae_dense, vae_conv, timeVAE
     # ----------------------------------------------------------------------------------
     # read data    
-    valid_perc = 0.1
-    input_file = f'{dataset_name}_{dataset_state}_train.npz'
-    full_train_data = utils.get_training_data(data_dir + input_file)
-    N, T, D = full_train_data.shape   
-    print('data shape:', N, T, D) 
+    #valid_perc = 0.1
+    train_input_file = f'{dataset_name}_train.npz'
+    train_data = utils.get_training_data(data_dir + train_input_file)
+    N_t, T_t, D_t = train_data.shape   
+    print('train data shape:', N_t, T_t, D_t)
 
-    # ----------------------------------------------------------------------------------
-    # further split the training data into train and validation set - same thing done in forecasting task
-    N_train = int(N * (1 - valid_perc))
-    N_valid = N - N_train
-
-    # Shuffle data
-    np.random.shuffle(full_train_data)
-
-    train_data = full_train_data[:N_train]
-    valid_data = full_train_data[N_train:]   
-    print("train/valid shapes: ", train_data.shape, valid_data.shape)    
+    test_input_file = f'{dataset_name}_test.npz'
+    test_data = utils.get_training_data(data_dir + test_input_file)
+    N_v, T_v, D_v = test_data.shape   
+    print('test data shape:', N_v, T_v, D_v) 
     
     # ----------------------------------------------------------------------------------
     # min max scale the data    
     scaler = utils.MinMaxScaler()        
     scaled_train_data = scaler.fit_transform(train_data)
 
-    scaled_valid_data = scaler.transform(valid_data)
-    # joblib.dump(scaler, 'scaler.save')  
+    # ----------------------------------------------------------------------------------
+    # Print the current model settings:
+    print("\n")
+    print("-------------------------------------------------------------------------------")
+    print(f"Now training VAE with ls = {ls}, ld = {ld}, tp = {tp}")
+    print("-------------------------------------------------------------------------------")
+    print("\n") 
 
     # ----------------------------------------------------------------------------------
     # instantiate the model     
-    
-    latent_dim = 8
-
     if vae_type == 'vae_dense': 
-        vae = VAE_Dense( seq_len=T,  feat_dim = D, latent_dim = latent_dim, hidden_layer_sizes=[200,100], )
+        vae = VAE_Dense( seq_len=T_t, feat_dim=D_t, latent_dim=ld, hidden_layer_sizes=ls, )
     elif vae_type == 'vae_conv':
-        vae = VAE_Conv( seq_len=T,  feat_dim = D, latent_dim = latent_dim, hidden_layer_sizes=[100, 200] )
+        vae = VAE_Conv( seq_len=T_t, feat_dim=D_t, latent_dim=ld, hidden_layer_sizes=ls )
     elif vae_type == 'timeVAE':
-        vae = TimeVAE( seq_len=T,  feat_dim = D, latent_dim = latent_dim, hidden_layer_sizes=[50, 100, 200],        #[80, 200, 250] 
-                reconstruction_wt = 3.0,
+        vae = TimeVAE( seq_len=T_t, feat_dim=D_t, latent_dim=ld, hidden_layer_sizes=ls,
+                reconstruction_wt = 3,
                 # ---------------------
                 # disable following three arguments to use the model as TimeVAE_Base. Enabling will convert to Interpretable version.
                 # Also set use_residual_conn= False if you want to only have interpretable components, and no residual (non-interpretable) component. 
                 
-                trend_poly=2, 
-                custom_seas = [ (6,1), (7, 1), (8,1), (9,1)] ,     # list of tuples of (num_of_seasons, len_per_season)
-                use_scaler = True,
+                trend_poly=tp, 
+                custom_seas = [(6,1), (7,1), (8,1), (9,1)],     # list of tuples of (num_of_seasons, len_per_season)
+                # use_scaler = True,
                 
                 #---------------------------
                 use_residual_conn = True
@@ -88,16 +87,15 @@ if __name__ == '__main__':
 
     
     vae.compile(optimizer=Adam())
-    # vae.summary() ; sys.exit()
 
     early_stop_loss = 'loss'
     early_stop_callback = EarlyStopping(monitor=early_stop_loss, min_delta = 1e-1, patience=10) 
     reduceLR = ReduceLROnPlateau(monitor='loss', factor=0.1, patience=5)
 
-    vae.fit(
+    training_history = vae.fit(
         scaled_train_data, 
         batch_size = 32,
-        epochs=500,
+        epochs=1000,
         shuffle = True,
         callbacks=[early_stop_callback, reduceLR],
         verbose = 1
@@ -106,7 +104,8 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------------------    
     # save model 
     model_dir = './model/'
-    file_pref = f'{vae_type}_{dataset_name}_{dataset_state}_'
+    signiture = f"{dataset_name}_{ls}_{ld}_{tp}_new"
+    file_pref = f'{vae_type}_{signiture}'
     vae.save(model_dir, file_pref)
     
     # ----------------------------------------------------------------------------------
@@ -114,40 +113,33 @@ if __name__ == '__main__':
     X = scaled_train_data
 
     x_decoded = vae.predict(scaled_train_data)
-    print('x_decoded.shape', x_decoded.shape)
-
-    ### compare original and posterior predictive (reconstructed) samples
-    utils.draw_orig_and_post_pred_sample(X, x_decoded, n=5, dataset_name=dataset_name, dataset_state=dataset_state)
-    
-
-    # # Plot the prior generated samples over different areas of the latent space
-    if latent_dim == 2: utils.plot_latent_space_timeseries(vae, n=8, figsize = (20, 10), dataset_name=dataset_name, dataset_state=dataset_state)
-        
+    print('x_decoded.shape', x_decoded.shape)                        
     # # ----------------------------------------------------------------------------------
     # draw random prior samples
-    input_file = f'{dataset_name}_{dataset_state}_test.npz'
-    full_test_data = utils.get_training_data(data_dir + input_file)
-    N, T, D = full_test_data.shape
-    N_test = N
+    print("num_samples: ", N_v)
 
-    num_samples = N_test
-    print("num_samples: ", num_samples)
-
-    samples = vae.get_prior_samples(num_samples=num_samples)
+    samples = vae.get_prior_samples(num_samples=N_v)
     
-    utils.plot_samples(samples, n=5, dataset_name=dataset_name, dataset_state=dataset_state)
+    # Generate plots:
+    plot_path = "./outputs/sine_experiment/plots/"
+    utils.plot_samples(samples, n=5, path=plot_path, signiture=signiture)
+    utils.plot_losses(training_history, path=plot_path, signiture=signiture)
+    utils.draw_orig_and_post_pred_sample(X, x_decoded, n=5, path=plot_path, signiture=signiture)
+    
+    # Plot the prior generated samples over different areas of the latent space
+    if ld == 2: utils.plot_latent_space_timeseries(vae, n=8, figsize = (20, 10), path=plot_path, signiture=signiture)
 
     # inverse-transform scaling 
     samples = scaler.inverse_transform(samples)
     print('shape of gen samples: ', samples.shape) 
 
     # ----------------------------------------------------------------------------------
-    # save samples
-    output_dir = './outputs/'
-    sample_fname = f'{dataset_name}_{dataset_state}_gen.npz'
+    # Save the synthethic data for further analysis:
+    output_dir = './outputs/sine_experiment/data'
+    sample_fname = f'{signiture}_gen.npz'
     samples_fpath = os.path.join(output_dir, sample_fname) 
     np.savez_compressed(samples_fpath, data=samples)
-    np.savez_compressed("../TSGBench/data/timevae/" + sample_fname, data=samples)
+    #np.savez_compressed("../TSGBench/data/timevae/sine_experiment/" + sample_fname, data=samples)
 
     # ----------------------------------------------------------------------------------
     
@@ -155,11 +147,11 @@ if __name__ == '__main__':
     new_vae = TimeVAE.load(model_dir, file_pref)
 
     new_x_decoded = new_vae.predict(scaled_train_data)
-    # print('new_x_decoded.shape', new_x_decoded.shape)
+    print('new_x_decoded.shape', new_x_decoded.shape)
 
     print('Preds from orig and loaded models equal: ', np.allclose( x_decoded,  new_x_decoded, atol=1e-5))        
     
     # ----------------------------------------------------------------------------------
     
     end = time.time()
-    print(f"Total run time: {np.round((end - start)/60.0, 2)} minutes") 
+    print(f"Total run time: {np.round((end - start)/60.0, 2)} minutes")
